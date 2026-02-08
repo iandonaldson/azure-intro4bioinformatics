@@ -12,16 +12,7 @@ Read through the learning path [here](https://learn.microsoft.com/en-us/training
 
 Deploying and managing Azure virtual machines (VMs) involves using the Azure Portal to create resources—specifically selecting an OS image, VM size, and networking—within a defined resource group. Key management tasks include connecting via RDP/SSH, monitoring performance, utilizing Azure Bastion for security, and implementing auto-shutdown to control costs. 
 
-How to Deploy Azure VMs
-
-1. Sign in to the Azure Portal: Navigate to portal.azure.com.  
-2. Initiate Creation: Search for "Virtual machines," click Create, and select Azure virtual machine.  
-   [See this link](https://portal.azure.com/#view/Microsoft_Azure_ComputeHub/ComputeHubMenuBlade/~/virtualMachinesBrowse)   
-3. Configure Basics:  
-   1. Subscription/Resource Group: Select your subscription and create a new resource group for logical organization.  
-   2. VM Name/Region: Name the VM and choose a geographic region.  
-   3. Image: Select an OS image (e.g., Windows Server 2022, Ubuntu).  
-   4. Size: Choose a VM size (CPU/RAM) based on workload requirements.
+You can use the practical notes in 2.b.practical_linux_deployment_on_azure.md as a guide to setting up a Linux VM to carry out a typical STAR alignment on a single VM.  Other tasks will require modified VM's where CPU/RAM will be chosen based on the workload requirements.
   
 | Tool        | Azure concept              |
 | ----------- | -------------------------- |
@@ -31,12 +22,6 @@ How to Deploy Azure VMs
 | Snakemake   | VM + local execution       |
 | Nextflow    | VM + Docker/Singularity    |
   
-4. Set Credentials: Provide a username and password/SSH key for administrator access.  
-5. Networking & Disks: Configure virtual networks, public IPs, and disk types (Standard SSD, Premium SSD).  
-6. Review \+ Create: Validate the settings and click Create. 
-
-Reference:  
-[QuickLearn](https://portal.azure.com/#view/Microsoft_Azure_ComputeHub/QuickLearn.ReactView)
 
 ### 3a. Storage on Azure
 Read through this background material on setting up storage on Azure [here](https://learn.microsoft.com/en-us/training/paths/store-data-in-azure/).  The notes at storage_on_azure.md provide a summary of terms and concepts with a bioinformatics focus.
