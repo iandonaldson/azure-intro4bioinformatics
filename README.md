@@ -2,11 +2,13 @@
 
 notes from this path
 
-### 1. [azure cloud concepts](https://learn.microsoft.com/en-us/training/paths/microsoft-azure-fundamentals-describe-cloud-concepts)
+### 1. Azure cloud concepts  
+Read the learning path [here](https://learn.microsoft.com/en-us/training/paths/microsoft-azure-fundamentals-describe-cloud-concepts).  The azure_cloud_concepts.md file contains a glossary of basic cloud terms and concepts related to azure. 
 
-### 2. [linux on azure](https://learn.microsoft.com/en-us/training/paths/azure-linux/)
+### 2a. Linux on azure  
+Read through the learning path [here](https://learn.microsoft.com/en-us/training/paths/azure-linux/).  The linux_on_azure.md file contains a glossary of terms and concepts specific to Linux deployment and administration through Azure.
 
-### 3. Deploy Azure VMs
+### 2b. Practical Deployment of Azure VMs  
 
 Deploying and managing Azure virtual machines (VMs) involves using the Azure Portal to create resources—specifically selecting an OS image, VM size, and networking—within a defined resource group. Key management tasks include connecting via RDP/SSH, monitoring performance, utilizing Azure Bastion for security, and implementing auto-shutdown to control costs. 
 
@@ -36,5 +38,285 @@ How to Deploy Azure VMs
 Reference:  
 [QuickLearn](https://portal.azure.com/#view/Microsoft_Azure_ComputeHub/QuickLearn.ReactView)
 
-### 3. [storage on azure](https://learn.microsoft.com/en-us/training/paths/store-data-in-azure/)
+### 3a. Storage on Azure
+Read through this background material on setting up storage on Azure [here](https://learn.microsoft.com/en-us/training/paths/store-data-in-azure/).  The notes at storage_on_azure.md provide a summary of terms and concepts with a bioinformatics focus.
+
+### 3b. Practical Deployment of storage on Azure 
+
+Below is a **practical, opinionated, step-by-step protocol** for creating an **Azure Storage Account** that is *fit for purpose* for a **human RNA-seq alignment pipeline using STAR**.
+
+This is **not** the generic Microsoft exercise rewritten — it’s tuned specifically to avoid the classic Azure + bioinformatics traps (object storage vs filesystem, I/O bottlenecks, and accidental cost explosions).
+
+---
+
+# Protocol: Azure Storage Account for STAR-based RNA-seq Alignment
+
+## Goal (bioinformatics-specific)
+
+Create a storage account that will:
+
+* Hold **FASTQ inputs** and **BAM outputs**
+* Act as **ingest + archive**, not live compute
+* Work cleanly with **VM-local disks**, where STAR actually runs
+* Be cheap, secure, and boring (the highest compliment in storage)
+
+---
+
+## Architectural assumption (important)
+
+> **STAR will NOT run on Azure Blob Storage.**
+
+Your actual workflow will be:
+
+```
+Azure Blob Storage (FASTQs)
+        ↓
+VM local disk (/mnt or /scratch)
+        ↓
+STAR alignment
+        ↓
+Azure Blob Storage (BAMs, logs)
+```
+
+This protocol sets up the **Blob side** of that pattern correctly.
+
+---
+
+## Step 0 — Decide scope (before clicking anything)
+
+**Create ONE storage account for this project**, assuming:
+
+* Human RNA-seq
+* Re-derivable outputs
+* No regulatory requirement for cross-region redundancy
+
+You can always add more later, but starting simple avoids confusion.
+
+---
+
+## Step 1 — Create (or choose) a Resource Group
+
+1. Sign in to the **Azure portal**
+2. Go to **Resource groups**
+3. Create a new resource group, e.g.:
+
+```
+rg-rnaseq-star-dev
+```
+
+**Why bioinformaticians should care**
+
+* One project = one resource group
+* Deleting the RG later = instant cost shutdown
+
+---
+
+## Step 2 — Start creating the Storage Account
+
+1. In the Azure portal, go to **Storage accounts**
+2. Click **Create**
+
+---
+
+## Step 3 — Basics tab (most important choices)
+
+### Project details
+
+* **Subscription**: your research / personal subscription
+* **Resource group**: `rg-rnaseq-star-dev`
+
+### Instance details
+
+* **Storage account name**
+  Example:
+
+  ```
+  starfastqstore01
+  ```
+
+  (lowercase, globally unique)
+
+* **Region**
+  Choose the **same region where your VM will run**
+  (e.g. `UK South`, `West Europe`, `East US`)
+
+  **Bioinformatics rule:**
+  *Storage and compute must be co-located.*
+
+* **Performance**
+  ✅ **Standard**
+
+  Blob throughput is fine; STAR performance depends on VM disks, not Blob.
+
+* **Redundancy**
+  ✅ **Locally redundant storage (LRS)**
+
+  **Why not GRS?**
+
+  * FASTQs usually exist elsewhere (sequencer, archive)
+  * BAMs can be regenerated
+  * GRS doubles storage cost for little scientific value
+
+Click **Next**
+
+---
+
+## Step 4 — Advanced tab (avoid subtle traps)
+
+### Security
+
+* ✅ Require secure transfer (HTTPS only)
+* ✅ Enable storage account key access (needed for SAS / automation)
+* ❌ Default to Microsoft Entra authorization (unless you know you need it)
+* **Minimum TLS**: 1.2
+
+### Hierarchical namespace
+
+* ❌ **Disable**
+
+  **Why:**
+  STAR and most genomics tools do not benefit from Data Lake semantics.
+
+### Blob storage
+
+* **Access tier**: ✅ **Hot**
+
+  **Rationale**
+
+  * FASTQs are read intensively during alignment
+  * You can move BAMs to Cool later
+
+### Azure Files
+
+* Leave defaults
+
+  **Important:**
+  Do **not** plan to run STAR directly on Azure Files.
+
+Click **Next**
+
+---
+
+## Step 5 — Networking tab
+
+* **Network access**:
+  ✅ Enable public access from all networks
+
+  (You can lock this down later with VNets once things work.)
+
+* **Routing preference**:
+  ✅ Microsoft network routing
+
+Click **Next**
+
+---
+
+## Step 6 — Data protection tab (keep it simple)
+
+For a STAR pipeline:
+
+* ❌ Soft delete for blobs
+* ❌ Versioning
+* ❌ Change feed
+* ❌ Immutability
+
+**Why:**
+
+* These features increase cost and cognitive load
+* Your pipeline outputs are reproducible
+
+Click **Next**
+
+---
+
+## Step 7 — Encryption, Tags, Review
+
+* **Encryption**: accept defaults
+* **Tags** (recommended):
+
+  ```
+  project = rnaseq
+  tool = star
+  data = sequencing
+  owner = <your name>
+  ```
+
+Click **Review + Create** → **Create**
+
+---
+
+## Step 8 — Post-creation: create containers
+
+Once deployment finishes:
+
+1. Go to your storage account
+2. Select **Containers**
+3. Create the following containers:
+
+```
+fastq
+reference
+bam
+logs
+```
+
+**Container purpose**
+
+* `fastq/` – input reads
+* `reference/` – FASTA, GTF (read-only)
+* `bam/` – STAR outputs
+* `logs/` – alignment logs, metrics
+
+---
+
+## Step 9 — How STAR will actually use this storage
+
+On your **VM**:
+
+1. Copy FASTQs from Blob → local disk
+2. Run STAR on local disk
+3. Copy BAMs + logs back to Blob
+
+Example conceptual flow:
+
+```
+azcopy copy blob://fastq/*.fastq.gz /mnt/fastq/
+STAR --genomeDir /mnt/ref --readFilesIn /mnt/fastq/*
+azcopy copy /mnt/output/*.bam blob://bam/
+```
+
+**Key principle**
+
+> Blob Storage is for *data gravity*.
+> VM disks are for *computation*.
+
+---
+
+## Step 10 — Cleanup discipline (don’t skip)
+
+When the project ends:
+
+1. Delete the **resource group**
+2. Everything (storage, VMs, networking) disappears
+3. Billing stops
+
+---
+
+## Final bioinformatics sanity checklist
+
+✔ Blob Storage used only for ingest + archive
+✔ STAR never touches Blob directly
+✔ Storage and VM in same region
+✔ LRS to control cost
+✔ Hot tier for active FASTQs
+✔ Containers reflect pipeline stages
+
+---
+
+If you want, next we can:
+
+* Add the **VM spec** that pairs well with this setup (CPU, disk layout)
+* Show the **exact azcopy + STAR command sequence**
+* Translate this into an **AWS S3 + EC2 equivalent** for comparison
+
 
