@@ -19,7 +19,16 @@ How to Deploy Azure VMs
    1. Subscription/Resource Group: Select your subscription and create a new resource group for logical organization.  
    2. VM Name/Region: Name the VM and choose a geographic region.  
    3. Image: Select an OS image (e.g., Windows Server 2022, Ubuntu).  
-   4. Size: Choose a VM size (CPU/RAM) based on workload requirements.  
+   4. Size: Choose a VM size (CPU/RAM) based on workload requirements.
+  
+| Tool        | Azure concept              |
+| ----------- | -------------------------- |
+| STAR        | High-memory VM + fast disk |
+| Cell Ranger | Many cores + local NVMe    |
+| Seurat      | Modest VM, RStudio Server  |
+| Snakemake   | VM + local execution       |
+| Nextflow    | VM + Docker/Singularity    |
+  
 4. Set Credentials: Provide a username and password/SSH key for administrator access.  
 5. Networking & Disks: Configure virtual networks, public IPs, and disk types (Standard SSD, Premium SSD).  
 6. Review \+ Create: Validate the settings and click Create. 
