@@ -42,11 +42,17 @@ You can use the notes in 4.b.practical_container_deployment_on_azure.md as a gui
 ### 4c. Building and storing containers on Azure
 Read though this background material on building and storing containers on Azure [here](https://learn.microsoft.com/en-us/training/modules/build-and-store-container-images/). The notes at 4.c.build_and_store_containers.md provide a summary of terms and concepts with a bioinformatics focus.  
 
-### 4d. Introduction to Kubernetes
+### 4d. Basic bioinformatics image
+For demonstration purposes only.  Consider https://hub.docker.com/r/broadinstitute/gatk 
+
+### 4e. Modified basic image for STAR RNASeq
+For demonstration purposes only.  Consider https://hub.docker.com/r/broadinstitute/gatk
+
+### 4f. Introduction to Kubernetes
 Read though this background material on Kubernetes [here](https://learn.microsoft.com/en-us/training/modules/intro-to-kubernetes/).
 The notes at 4.d.kubernetes_intro.md provide a summary of terms and concepts with a bioinformatics focus.  
 
-### 4e. Introduction to Azure Kubernetes Service (AKS)
+### 4g. Introduction to Azure Kubernetes Service (AKS)
 Read though this background material on Azure Kubernetes Service [here](https://learn.microsoft.com/en-us/training/modules/intro-to-azure-kubernetes-service/).
 The notes at 4.d.azure_kubernetes_service.md provide a summary of terms and concepts with a bioinformatics focus.  
 
