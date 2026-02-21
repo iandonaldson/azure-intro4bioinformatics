@@ -32,12 +32,13 @@ You can use the notes in 3.b.practical_storage_deployment_on_azure.md as a guide
 
 
 ### 4. Administer Docker Containers on Azure
-
+Material for 4a to 4c is from [here](https://learn.microsoft.com/en-us/training/paths/administer-containers-in-azure/)  
+  
 ### 4a. Introduction to Docker Containers  
 Read though this background material on docker containers on Azure [here](https://learn.microsoft.com/en-us/training/modules/intro-to-docker-containers/).  The notes at 4.a.docker_containers.md provide a summary of terms and concepts with a bioinformatics focus.  
 
 ### 4b. Practical Deployment of a website on Azure Using a Container.
-You can use the notes in 4.b.practical_container_deployment_on_azure.md as a guide to setting up a container account on azure.  (These notes are based on this [tutorial]([https://learn.microsoft.com/en-us/training/modules/create-azure-storage-account/5-exercise-create-a-storage-account](https://learn.microsoft.com/en-us/training/modules/intro-to-containers/)). 
+You can use the notes in 4.b.practical_container_deployment_on_azure.md as a guide to setting up a container and deploying on azure.  (These notes are based on this [tutorial](https://learn.microsoft.com/en-us/training/modules/intro-to-containers/)  specifically see Exercises in this section.
 
 ### 4c. Building and storing containers on Azure
 Read though this background material on building and storing containers on Azure [here](https://learn.microsoft.com/en-us/training/modules/build-and-store-container-images/). The notes at 4.c.build_and_store_containers.md provide a summary of terms and concepts with a bioinformatics focus.  
