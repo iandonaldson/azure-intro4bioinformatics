@@ -1,0 +1,670 @@
+# Modern GitHub-first Docker Containers on Azure for Bioinformatics  
+## Buildkite, multi-stage Dockerfiles, Docker Compose, and GHCR in one end-to-end tutorial
+
+## Source tutorial context and what “modernizing” is trying to fix
+
+The referenced bioinformatics tutorial proposes four “more modern” changes: (1) Buildkite, (2) multi-stage Dockerfiles, (3) Docker Compose, and (4) “GitHub-first” with GHCR. citeturn4view0
+
+One important clarification up front: the tutorial’s wording mixes up **Buildkite** (a CI/CD platform) with **BuildKit** (Docker’s build engine). This matters because you don’t “replace `docker build` with Buildkite”—you typically run Docker (often via BuildKit / `buildx`) *inside* a CI system such as Buildkite. Docker’s own docs explicitly distinguish the legacy builder vs BuildKit in how stages get processed, and `docker buildx build` is the BuildKit-backed build command. citeturn20view1turn15view2turn4view0
+
+## The four modernization concepts explained with bioinformatics-oriented examples
+
+### Buildkite as CI/CD (and how it actually relates to builds)
+
+**What it is:** Buildkite is a hosted CI/CD “control plane” that orchestrates builds run by Buildkite Agents (hosted or self-managed). It can integrate with GitHub to build pull requests, update commit status checks, and support a typical PR → main branch workflow. citeturn9view0turn8view0
+
+**Why it’s modern/useful here:**  
+Bioinformatics container images often have heavier dependencies (native libraries, large toolchains, reference data staging). Moving builds into a CI platform forces repeatability and prevents “works on my laptop” images—particularly important for regulated or reproducible science workflows.
+
+**Security note:** Buildkite has a dedicated secrets product (“Buildkite secrets”) designed as an encrypted key-value store with access policies, TLS in transit, encryption at rest, and access logging. citeturn24search2turn24search30
+
+**Bioinformatics example:** A Buildkite pipeline that:
+- Builds/pushes “analysis tool” images (e.g., STAR + conda, or FastQC) and “service” images (APIs, portals).
+- Runs smoke tests (e.g., `STAR --version` or a tiny “toy dataset” alignment to ensure the binary works).
+
+### Multi-stage Dockerfiles
+
+**What it is:** Multi-stage Dockerfiles use multiple `FROM` stages so build-time tooling doesn’t ship in the final runtime image. Docker explicitly recommends multi-stage builds because they reduce final image size by separating build outputs from the runtime environment. citeturn15view1turn20view0
+
+**Why it’s modern/useful here:**  
+Bioinformatics tools often need compilers, headers, and build dependencies. Multi-stage builds let you compile (or install conda environments) in a builder stage and copy only what you need into a slimmer runtime stage.
+
+**BuildKit angle:** Docker documents that the legacy builder processes all stages up to `--target`, while BuildKit builds only what the target depends on, which can speed up development and CI builds. citeturn20view1
+
+### Docker Compose
+
+**What it is:** Compose is the recommended, current “Compose Specification” format for defining multi-container applications (services, networks, volumes, etc.). citeturn21view0
+
+**Why it’s modern/useful here:**  
+You can define a local dev environment that mirrors production topology: web frontend, API, workers, caches, etc.—a common need for bioinformatics portals that front a metadata DB, submit jobs, and display results.
+
+**Key best-practice nuance:** In the Compose spec, each service *may* include a `build` section; if the platform doesn’t implement build support, the file is still valid and the `build` section may be ignored. This is one reason it’s common to keep a dev Compose file (with `build:`) and a production Compose file (with pinned `image:` references). citeturn21view1
+
+**Azure tie-in (very relevant):** Azure CLI includes an `az containerapp compose create` command that can create one or more Container Apps from a Compose specification, including supplying registry credentials when needed. citeturn14view0
+
+### GitHub-first + GHCR
+
+**What it is:** “GitHub-first” means the repo is the system of record: app code, Dockerfiles, Compose, docs, and (ideally) infrastructure-as-code or at least deployment scripts. A “GitHub-first registry” approach stores built container images in GitHub Container Registry (GHCR), versioned and associated with repositories.
+
+**GHCR basics:** GitHub documents that the Container registry stores images within an org or personal account, supports associating images with a repository, and supports either inherited permissions or granular permissions. It also supports anonymous pulls of public images. citeturn24search7turn24search0
+
+**Authentication reality:** GitHub notes that GitHub Packages authentication (including GHCR) uses a personal access token (classic), and scopes like `read:packages` and `write:packages` control pull/push. citeturn15view3
+
+**Azure nuance (pitfall):** Microsoft’s Container Apps guidance notes that when using a non-ACR registry like GHCR, you must configure the container app to authenticate to the registry **even if the image is public**. citeturn24search5
+
+**Bioinformatics example:**  
+A private repo containing a proprietary pipeline UI can still publish **public** “tooling base images” (or vice-versa), controlling package visibility and access separately where supported. citeturn24search0turn24search4turn24search7
+
+## Tutorial overview and architecture
+
+You will build a tiny “bioinformatics metadata registry” demo:
+
+- **web** container: a minimal web UI that lists sequencing samples and inserts a new sample record
+- **api** container: a JSON API backed by **SQLite** (file-based) storing sample metadata
+
+SQLite is explicitly described by the SQLite project as an “in-process” library implementing a self-contained, serverless SQL database engine—so it’s not a network database server. In this tutorial, the “SQLite backend container” is an API service that *uses* a SQLite database file mounted at `/data`. citeturn19search4turn19search12
+
+In Azure production, you’ll deploy to Azure Container Apps and:
+- expose the **web** container publicly (external ingress)
+- keep the **api** container internal (internal ingress), reachable from the web container by app name within the same Container Apps environment (e.g., `http://api`). citeturn18view0turn17search2
+
+image_group{"layout":"carousel","aspect_ratio":"16:9","query":["Azure Container Apps architecture diagram ingress internal external","Docker Compose services networks volumes diagram","Buildkite pipeline dashboard screenshot","GitHub Codespaces devcontainer screenshot"],"num_per_query":1}
+
+## GitHub repo setup and Codespaces-first development
+
+### Repository structure (GitHub-first)
+
+Create a new repo (example name: `bioinfo-aca-compose-ghcr-buildkite`) and add the following structure:
+
+```text
+.
+├── .buildkite/
+│   └── pipeline.yml
+├── .devcontainer/
+│   └── devcontainer.json
+├── compose.yml
+├── compose.prod.yml
+├── services/
+│   ├── api/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── app/
+│   │       └── main.py
+│   └── web/
+│       ├── Dockerfile
+│       ├── requirements.txt
+│       └── app/
+│           └── main.py
+└── scripts/
+    ├── smoke.sh
+    └── deploy_aca.sh
+```
+
+This organization matches the “GitHub-first” goal: developers can clone the repo anywhere and get the same container definitions, dev environment, and deployment scripts. citeturn24search7turn21view0
+
+### Codespaces dev container
+
+GitHub documents that the key file is `.devcontainer/devcontainer.json`, which defines the environment for Codespaces (tools, extensions, port forwarding, etc.). citeturn22view0  
+It also documents “features” as reusable units of install/config code you can add quickly to a devcontainer. citeturn22view1
+
+Use the official devcontainers **docker-in-docker** feature so your Codespace can build/run Docker images and Compose. The devcontainers package page shows the exact snippet to add. citeturn23view0
+
+Create `.devcontainer/devcontainer.json`:
+
+```jsonc
+{
+  "name": "bioinfo-aca-compose-ghcr-buildkite",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.12",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2.14.0": {}
+  },
+  "forwardPorts": [8000, 8080],
+  "postCreateCommand": "python -m pip install --upgrade pip && pip --version",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-azuretools.vscode-docker", "ms-python.python"]
+    }
+  }
+}
+```
+
+Why this is best practice:
+- The repo encodes the dev environment so new team members (or trainees) can start quickly and consistently. citeturn22view0
+- Features are intended to add tools/runtimes in a portable way across base images. citeturn22view1
+
+### Local development with Compose
+
+Compose defines applications as services and supports volumes for persisted local storage (useful because containers are ephemeral by default). citeturn21view1turn24search15
+
+Create `compose.yml` (dev: build locally, mount a named volume for `/data`):
+
+```yaml
+services:
+  api:
+    build:
+      context: ./services/api
+    environment:
+      DB_PATH: /data/app.db
+    volumes:
+      - sqlite_data:/data
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: ./services/web
+    environment:
+      API_BASE_URL: http://api:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      - api
+
+volumes:
+  sqlite_data: {}
+```
+
+This aligns with the Compose model: services are backed by containers and can be replaced independently, and volumes can be declared at the top-level for reuse. citeturn21view1
+
+### Application code (bioinformatics-flavored)
+
+The “bioinformatics” aspect here is the **shape of the metadata**: sample name, project, run ID, library type, and a small note field—typical of the “metadata plane” in sequencing operations.
+
+Create `services/api/app/main.py`:
+
+```python
+import os
+import sqlite3
+from typing import Optional, List
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+DB_PATH = os.environ.get("DB_PATH", "/data/app.db")
+
+app = FastAPI(title="Bioinformatics Sample Registry API", version="0.1.0")
+
+
+class SampleIn(BaseModel):
+    sample_id: str
+    project: str
+    run_id: str
+    library_type: Optional[str] = None
+    note: Optional[str] = None
+
+
+class SampleOut(SampleIn):
+    created_at_utc: str
+
+
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_db() -> None:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    with _connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS samples (
+                sample_id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                library_type TEXT,
+                note TEXT,
+                created_at_utc TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+@app.on_event("startup")
+def startup() -> None:
+    _init_db()
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/samples", response_model=List[SampleOut])
+def list_samples():
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM samples ORDER BY created_at_utc DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+@app.post("/samples", response_model=SampleOut)
+def add_sample(sample: SampleIn):
+    import datetime as dt
+
+    created = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    record = {**sample.model_dump(), "created_at_utc": created}
+
+    try:
+        with _connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO samples(sample_id, project, run_id, library_type, note, created_at_utc)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["sample_id"],
+                    record["project"],
+                    record["run_id"],
+                    record.get("library_type"),
+                    record.get("note"),
+                    record["created_at_utc"],
+                ),
+            )
+            conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="sample_id already exists")
+
+    return record
+```
+
+Create `services/api/requirements.txt`:
+
+```text
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+pydantic==2.10.6
+```
+
+Create `services/web/app/main.py`:
+
+```python
+import os
+import requests
+from fastapi import FastAPI, Form
+from fastapi.responses import HTMLResponse
+
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8000")
+
+app = FastAPI(title="Sample Registry UI", version="0.1.0")
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    samples = requests.get(f"{API_BASE_URL}/samples", timeout=3).json()
+    rows = "".join(
+        f"<tr><td>{s['sample_id']}</td><td>{s['project']}</td><td>{s['run_id']}</td>"
+        f"<td>{s.get('library_type','')}</td><td>{s.get('note','')}</td><td>{s['created_at_utc']}</td></tr>"
+        for s in samples
+    )
+    return f"""
+    <html>
+      <head><title>Bioinformatics Sample Registry</title></head>
+      <body>
+        <h1>Bioinformatics Sample Registry</h1>
+        <p>API base: <code>{API_BASE_URL}</code></p>
+
+        <h2>Add sample</h2>
+        <form method="post" action="/add">
+          <label>sample_id <input name="sample_id" /></label><br/>
+          <label>project <input name="project" /></label><br/>
+          <label>run_id <input name="run_id" /></label><br/>
+          <label>library_type <input name="library_type" /></label><br/>
+          <label>note <input name="note" /></label><br/>
+          <button type="submit">Insert</button>
+        </form>
+
+        <h2>Samples</h2>
+        <table border="1" cellpadding="6">
+          <tr><th>sample_id</th><th>project</th><th>run_id</th><th>library_type</th><th>note</th><th>created_at_utc</th></tr>
+          {rows}
+        </table>
+      </body>
+    </html>
+    """
+
+
+@app.post("/add")
+def add(
+    sample_id: str = Form(...),
+    project: str = Form(...),
+    run_id: str = Form(...),
+    library_type: str = Form(""),
+    note: str = Form(""),
+):
+    payload = {
+        "sample_id": sample_id,
+        "project": project,
+        "run_id": run_id,
+        "library_type": library_type or None,
+        "note": note or None,
+    }
+    r = requests.post(f"{API_BASE_URL}/samples", json=payload, timeout=3)
+    r.raise_for_status()
+    return index()
+```
+
+Create `services/web/requirements.txt`:
+
+```text
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+requests==2.32.3
+```
+
+Run locally (in Codespaces or locally):
+
+```bash
+docker compose up --build
+```
+
+Then open the forwarded port `8080` and insert a sample record.
+
+## Multi-stage Dockerfiles for both containers
+
+Docker recommends multi-stage builds to reduce final image size and keep runtime images clean. citeturn15view1turn20view0  
+Docker also recommends general build best practices such as using multi-stage builds, excluding files with `.dockerignore`, and building/testing in CI. citeturn24search15turn15view1
+
+### API Dockerfile: builder stage + runtime stage
+
+Create `services/api/Dockerfile`:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+
+FROM python:3.12-slim AS builder
+WORKDIR /build
+
+# System deps for building wheels (example; keep minimal)
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends build-essential \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN python -m venv /opt/venv \
+  && /opt/venv/bin/pip install --upgrade pip \
+  && /opt/venv/bin/pip wheel --wheel-dir /wheels -r requirements.txt
+
+FROM python:3.12-slim AS runtime
+ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /app
+
+# Create a non-root user (best practice: reduce privileges)
+RUN useradd -m -u 10001 appuser
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir /wheels/*
+
+COPY app ./app
+RUN mkdir -p /data && chown -R appuser:appuser /data
+
+USER 10001
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host=0.0.0.0", "--port=8000"]
+```
+
+Notes:
+- The builder stage compiles/wheels dependencies, keeping build tooling out of the runtime image. citeturn15view1turn20view0
+- Running as non-root is a commonly recommended container hardening practice; Docker’s own security guidance emphasizes that containers are “especially” secure when processes run as non-privileged users, and Docker provides rootless options as well. citeturn19search11turn19search7
+
+### Web Dockerfile: same multi-stage pattern
+
+Create `services/web/Dockerfile`:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+
+FROM python:3.12-slim AS builder
+WORKDIR /build
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends build-essential \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN python -m venv /opt/venv \
+  && /opt/venv/bin/pip install --upgrade pip \
+  && /opt/venv/bin/pip wheel --wheel-dir /wheels -r requirements.txt
+
+FROM python:3.12-slim AS runtime
+ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /app
+
+RUN useradd -m -u 10001 appuser
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir /wheels/*
+
+COPY app ./app
+
+USER 10001
+EXPOSE 8080
+CMD ["uvicorn", "app.main:app", "--host=0.0.0.0", "--port=8080"]
+```
+
+## CI with Buildkite: build, smoke test, push to GHCR
+
+### Why Compose is useful inside CI
+
+Buildkite’s own documentation recommends **using Docker Compose for most projects** (simplifying CI execution when you have multiple services). citeturn5view0  
+This aligns nicely with our `compose.yml` smoke-test approach.
+
+### Smoke test script
+
+Create `scripts/smoke.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+docker compose up -d --build
+
+# Wait for health endpoints
+for i in {1..30}; do
+  if curl -fsS http://localhost:8000/healthz >/dev/null && curl -fsS http://localhost:8080/healthz >/dev/null; then
+    echo "Services healthy"
+    break
+  fi
+  sleep 1
+done
+
+# Insert a record through the API
+curl -fsS -X POST http://localhost:8000/samples \
+  -H 'Content-Type: application/json' \
+  -d '{"sample_id":"NA12878","project":"demo","run_id":"RUN001","library_type":"WGS","note":"smoke test"}' \
+  | jq -e '.sample_id=="NA12878"' >/dev/null
+
+# Confirm UI returns HTML
+curl -fsS http://localhost:8080/ | grep -q "Bioinformatics Sample Registry"
+
+docker compose down -v
+echo "Smoke test OK"
+```
+
+### GHCR authentication (what you must set up)
+
+GitHub documents that GHCR authentication uses a personal access token (classic) and that scopes such as `read:packages` and `write:packages` correspond to pulling and pushing images. citeturn15view3
+
+Also note GitHub’s warning that selecting `write:packages` in the UI may auto-select broader scopes such as `repo`, which GitHub explicitly recommends avoiding in some contexts. citeturn15view3
+
+### Buildkite secrets for CI credentials
+
+Buildkite provides “Buildkite secrets” with encryption and access controls; you can scope which agents can access secrets and rotate credentials. citeturn24search2turn24search30
+
+For this tutorial, store these Buildkite secrets (names are examples):
+
+- `GHCR_USERNAME` (GitHub username or org bot account)
+- `GHCR_TOKEN` (PAT classic with `write:packages` for pushes; `read:packages` is sufficient for pulls)
+- `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` (for deployment)
+- Optional: `ACA_REGISTRY_PASSWORD` if you want a dedicated “pull-only” token for Azure
+
+### Buildkite pipeline
+
+Create `.buildkite/pipeline.yml`:
+
+```yaml
+steps:
+  - label: ":test_tube: smoke test (compose)"
+    command:
+      - "bash scripts/smoke.sh"
+
+  - wait
+
+  - label: ":docker: build & push images to GHCR"
+    branches: "main"
+    command:
+      - "echo \"$GHCR_TOKEN\" | docker login ghcr.io -u \"$GHCR_USERNAME\" --password-stdin"
+      - "export TAG=${BUILDKITE_COMMIT}"
+      - "docker buildx create --use || true"
+      - "docker buildx build -t ghcr.io/${GHCR_USERNAME}/bioinfo-api:${TAG} --push services/api"
+      - "docker buildx build -t ghcr.io/${GHCR_USERNAME}/bioinfo-web:${TAG} --push services/web"
+
+  - block: ":rocket: deploy to Azure (manual approval)"
+    branches: "main"
+
+  - label: ":azure: deploy to Azure Container Apps"
+    branches: "main"
+    command:
+      - "bash scripts/deploy_aca.sh"
+```
+
+Why `buildx` here:
+- Docker’s docs state `docker buildx build` “starts a build using BuildKit,” and it also lists `docker build` as an alias. This directly contradicts the idea that `docker build` is generally “deprecated”; instead the ecosystem shifted toward BuildKit as the preferred build engine. citeturn15view2turn20view1turn4view0
+
+## Deploy production on Azure Container Apps using Compose + best practices
+
+### Azure-to-Azure container app communication model
+
+Microsoft documents that container apps in the same environment can call each other via:
+- default FQDN
+- custom domain
+- container app name for internal requests, e.g., `http://<APP_NAME>`
+and notes that this internal traffic does not leave the environment when using FQDN or app name. citeturn18view0
+
+This makes the web→api call straightforward in production: set `API_BASE_URL=http://api` (where `api` is the app name in Azure).
+
+### Production Compose file (image-based)
+
+Because Azure Container Apps needs to pull images from GHCR, you’ll use a Compose file that references GHCR tags (not `build:`).
+
+Create `compose.prod.yml`:
+
+```yaml
+services:
+  api:
+    image: ghcr.io/YOUR_GH_USERNAME_OR_ORG/bioinfo-api:YOUR_TAG
+    environment:
+      DB_PATH: /data/app.db
+    # ingress will be internal (set in ACA)
+
+  web:
+    image: ghcr.io/YOUR_GH_USERNAME_OR_ORG/bioinfo-web:YOUR_TAG
+    environment:
+      API_BASE_URL: http://api
+    # ingress will be external (set in ACA)
+    depends_on:
+      - api
+```
+
+This aligns with the Compose model where services are defined by images and runtime args; builds are optional and platform-dependent. citeturn21view1
+
+### Deploy from a Compose spec to Container Apps
+
+Azure CLI provides `az containerapp compose create` to create one or more Container Apps in an environment from a Compose file, and it supports registry credential parameters. citeturn14view0
+
+A practical `scripts/deploy_aca.sh` (template) could look like:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+RG="bioinfo-aca-rg"
+LOCATION="uksouth"
+ENV="bioinfo-aca-env"
+
+# Login (service principal expected in Buildkite)
+az login --service-principal \
+  --username "$AZURE_CLIENT_ID" \
+  --password "$AZURE_CLIENT_SECRET" \
+  --tenant "$AZURE_TENANT_ID"
+
+az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+
+az group create -n "$RG" -l "$LOCATION"
+
+# Create the environment (if needed)
+az containerapp env create -g "$RG" -n "$ENV" -l "$LOCATION" || true
+
+# Create container apps from Compose (assumes compose.prod.yml in repo)
+az containerapp compose create \
+  -g "$RG" \
+  --environment "$ENV" \
+  --compose-file-path "compose.prod.yml" \
+  --registry-server "ghcr.io" \
+  --registry-username "$GHCR_USERNAME" \
+  --registry-password "$ACA_REGISTRY_PASSWORD"
+```
+
+**Registry auth pitfall:** Microsoft explicitly notes that for GHCR (non-ACR), you must configure authentication even if the image is public. So always expect to supply credentials for Container Apps + GHCR. citeturn24search5
+
+### Configure ingress correctly (external web, internal API)
+
+Ingress is a core Container Apps concept with internal vs external exposure; internal ingress restricts access to the Container Apps environment, while external allows public access. citeturn17search2turn16view0
+
+After `compose create`, set:
+- `web`: external ingress, target port 8080
+- `api`: internal ingress, target port 8000, and consider enabling insecure internal HTTP if you plan to call it via `http://api` (as documented). citeturn18view0turn16view0
+
+### Persistent storage for the SQLite file
+
+SQLite is file-based; if the container restarts and `/data` is not persisted, your records disappear. SQLite’s own docs emphasize it is in-process and “serverless,” reinforcing that durability is about the filesystem you provide. citeturn19search4turn19search12
+
+Azure Container Apps supports storage mounts; the “use storage mounts” guidance shows you can mount Azure Files via environment storage configuration and then mount it into the app via YAML. The docs show `az containerapp env storage set` as the mechanism to configure storage at the environment level. citeturn11view0turn10view2
+
+In practice, the production best practice is:
+- create a Storage Account + Azure Files share
+- register the share as environment storage (`az containerapp env storage set`)
+- update the `api` container app YAML to mount that storage at `/data`
+
+This gives you persistence for the SQLite database file across revisions/restarts. citeturn11view0turn10view2
+
+## Pitfalls and best-practice checklist for bioinformatics teams
+
+### SQLite concurrency and “why this is a demo DB”
+SQLite is excellent for lightweight, embedded persistence, but concurrency behavior is file-lock based. The SQLite project documents its locking/concurrency model, and operationally you should expect contention with higher write concurrency. citeturn19search1turn19search4  
+For a real bioinformatics production portal with multiple concurrent write-heavy workers (e.g., ingesting pipeline results), consider a client/server database (Postgres, etc.)—but SQLite is perfectly fine for demos, single-writer ingestion, or edge-style deployments. citeturn19search4turn19search12
+
+### Keep images small and reproducible
+Docker recommends:
+- multi-stage builds
+- picking an appropriate base image
+- rebuilding images often (e.g., `--pull`)
+- excluding build context with `.dockerignore`
+- building/testing in CI citeturn24search15turn15view1
+
+For bioinformatics images, also consider:
+- pinning conda packages / apt packages where feasible
+- capturing tool versions (`STAR --version`, `samtools --version`) in CI smoke tests
+- tagging images with immutable identifiers (commit SHA) rather than only `latest`
+
+### Compose file portability between dev and Azure
+Because Compose build support is optional and platforms may ignore `build:`, keep a production Compose file with only `image:` references and treat it as the deployment artifact. citeturn21view1turn14view0
+
+### Registry pulling on Azure
+Expect to provide registry credentials when pulling from GHCR to Azure Container Apps—even for public images—per Microsoft’s own note. citeturn24search5  
+For private images, keep the token scope minimal (`read:packages`) and store it in a secrets system (Buildkite secrets, Azure Key Vault, etc.). citeturn15view3turn24search2
+
+### Further reading
+Docker multi-stage builds and BuildKit behavior (legacy builder vs BuildKit). citeturn20view1turn15view1  
+Docker Compose specification and service model (services, build optionality, volumes). citeturn21view0turn21view1  
+GitHub dev containers and features (Codespaces-first workflows). citeturn22view0turn22view1turn23view0  
+GHCR container registry fundamentals and authentication scopes. citeturn24search7turn15view3turn24search0  
+Azure Container Apps: calling container apps by name and ingress exposure patterns (internal vs external). citeturn18view0turn17search2turn16view0  
+Azure CLI: creating Container Apps from Compose specs (`az containerapp compose create`). citeturn14view0
