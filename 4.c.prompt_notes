@@ -1,9 +1,9 @@
-The same prompt was used to generate tutorials in 4c and 4d:
+The same prompt was used to generate tutorials in the two versions of 4c
 
 Take a look at the Docker tutorial below. The introduction includes five changes that might be made for a more modern approach (Buildkit, multi-staged docker files, Docker compose, CI/CD tools like Github actions and GHCR). Explain each of these concepts and create a new tutorial that uses all four new concepts to create an app that has a simple web-interface endpoint and a simple sql-lite backend (each with its own container). Use and explain best practices. Start with a github repo and assume that the developer first develops using github codespaces and github actions before moving to and deploying a production version on Azure. Explain what is happening at each step and provide pitfalls and examples of output where appropriate. Provide hyper-linked background references for further reading. Provide guidance on choosing technologies and how to choose between them. The new tutorial should be delivered as a markdown document.
 ================ DCOKER TUTORIAL ===============
 https://github.com/iandonaldson/azure-intro4bioinformatics/blob/main/4.b.practical_container_deployment_on_azure.md
 
 
-4c. ChatGPT, Deep Research, https://chatgpt.com/c/699b918d-a07c-8393-9207-d077e56c0206
-4d. Claude, Cowork, Sonnet 4.6, Desktop, Modern Docker tutorial with CI/CD and Azure
+ChatGPT: Deep Research, https://chatgpt.com/c/699b918d-a07c-8393-9207-d077e56c0206
+Claude: Cowork, Sonnet 4.6, Desktop, Modern Docker tutorial with CI/CD and Azure
