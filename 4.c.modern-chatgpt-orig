@@ -1,0 +1,967 @@
+This version is from https://chatgpt.com/c/699b918d-a07c-8393-9207-d077e56c0206  
+Exported as .md will mangle all references but code sections are formatted correctly.
+Try exporting later %$*&)##!
+
+# Modern Docker tutorial with BuildKit, multi-stage builds, Compose, GitHub Actions, GHCR, and Azure
+
+## Context and goals
+
+The Microsoft Learn tutorial you shared is intentionally “linear”: pull an image, run it, then Dockerfile a single service, then push to a private Azure registry and run it on Azure. That teaches the mechanics, but most real projects quickly hit four realities:
+
+You rarely ship **one container**; you ship a **stack** (web UI + API + database, at minimum). citeturn3search13turn13view0  
+You want builds that are **fast, cacheable, reproducible, and CI-friendly**, which is why BuildKit and Buildx matter. citeturn14search15turn0search4turn0search20  
+You want production images that are **small and safer**, which is why multi-stage Dockerfiles are now a default technique. citeturn0search5turn13view2  
+You usually build and publish images via **CI/CD** (commonly GitHub Actions), and you publish them somewhere (commonly GHCR if you’re already in GitHub). citeturn15search12turn1search0turn0search3  
+
+This tutorial modernizes the flow by building a small but realistic app, end-to-end:
+
+- Start from a GitHub repo and develop in **GitHub Codespaces** using a **dev container**. citeturn6view2  
+- Use **Docker Compose** to develop and run a two-container stack locally. citeturn4view1turn3search13  
+- Build both images with **BuildKit** (directly via Buildx) and **multi-stage Dockerfiles**. citeturn14search15turn0search20turn13view2  
+- Use **GitHub Actions** CI to test, then build and push images to **GHCR**. citeturn15search2turn15search12turn2search1turn0search3  
+- Deploy a production version to **Azure Container Apps**, with guidance on what changes for production (networking, secrets, persistence, scaling). citeturn11search2turn3search20turn3search3turn3search7  
+
+What you’ll build:
+
+```
+Browser
+  |
+  v
+web container (Nginx, serves UI, proxies /api/*)
+  |
+  v
+api container (FastAPI)
+  |
+  v
+SQLite database file (mounted volume)
+```
+
+This design keeps exactly **two containers**: a web interface container and a backend container whose persistence layer is SQLite.
+
+## The modern concepts explained
+
+**BuildKit and Buildx (what they are and why they matter)**  
+BuildKit is the engine that executes Docker builds. Docker documents BuildKit as the “improved backend” and notes it is the default builder on Docker Desktop and Docker Engine as of version 23.0. citeturn14search15turn0search12  
+Buildx is the CLI “front-end” that drives BuildKit; Docker’s build overview explains BuildKit resolves build instructions while Buildx monitors build status and prints progress. citeturn0search4  
+Practically, `docker buildx build` is the “modern” command that directly targets BuildKit and unlocks capabilities like multi-platform builds, explicit cache import/export, and flexible outputs. citeturn0search20turn1search0  
+
+Why “BuildKit vs `docker build`” is a real distinction: Docker CLI has evolved so `docker build` often uses BuildKit under the hood, but buildx is still the canonical way to use advanced BuildKit features consistently (especially in CI, and especially for caching and multi-platform). citeturn14search15turn0search20  
+
+**Multi-stage Dockerfiles (why they are the new default)**  
+A multi-stage Dockerfile uses multiple `FROM` stages: you build in one stage, then copy only the runtime artifacts into a smaller runtime stage. Docker’s multi-stage docs emphasize that this helps optimize Dockerfiles and is particularly valuable for separating build-time dependencies from runtime. citeturn0search5turn0search9  
+Docker’s build best practices explicitly recommend multi-stage builds to reduce final image size and keep only what’s necessary to run. citeturn13view2  
+
+**Docker Compose (why it’s the right tool for local stacks)**  
+Compose lets you define a multi-container application in a YAML “Compose file,” then create/start all services using the Compose CLI. citeturn4view1turn3search13  
+It also supports practical development ergonomics like controlling startup order via `depends_on` and health checks, and using “profiles” to selectively enable optional services. citeturn0search6turn0search2  
+Modern Docker also supports `docker compose` (no hyphen), and the CLI will auto-discover `compose.yaml` / `docker-compose.yaml` when you don’t pass `-f`. citeturn5view0  
+
+**CI/CD with GitHub Actions (what it automates)**  
+A GitHub Actions workflow is a YAML-defined automated process made up of jobs. citeturn15search2  
+For container projects, the common pattern is: run tests → build images → push images to a registry → deploy. GitHub’s own guide specifically covers building and publishing Docker images, including to GitHub Packages / GHCR. citeturn15search12turn1search16  
+Docker’s official `build-push-action` is built around Buildx/BuildKit and supports features like multi-platform builds and caching. citeturn1search0  
+
+**GHCR (GitHub Container Registry) (what it is and the “gotchas”)**  
+GitHub’s Container registry (GHCR) stores container images under your personal account or organization and lets you associate images with repositories; GitHub also documents granular permissions and access control options. citeturn0search3turn0search7turn15search5  
+GitHub Packages docs highlight that Actions workflows can use `GITHUB_TOKEN` to work with packages without needing a long-lived PAT, but you must configure workflow permissions appropriately (notably `packages: write` when pushing). citeturn2search1turn15search4turn15search10  
+
+**Codespaces + dev containers (why they fit this workflow)**  
+Codespaces creates your dev environment from a “dev container” config; GitHub documents `devcontainer.json` as the primary configuration file, usually located under `.devcontainer/`. citeturn6view2  
+Importantly: when you rebuild a codespace container, changes outside `/workspaces` are cleared—this bites people who install tooling ad-hoc instead of codifying it in the dev container. citeturn6view2  
+
+## Repository bootstrap and Codespaces-first development
+
+This section is written as a “README you can follow.” It assumes you start from an empty repo.
+
+### Create the GitHub repo
+
+From your local machine (or from the GitHub UI), create a repository. If you use GitHub CLI:
+
+```bash
+gh repo create modern-docker-stack --public --clone
+cd modern-docker-stack
+```
+
+Commit early and often; the CI sections later assume the default branch is `main`.
+
+### Create the project structure
+
+Create these directories:
+
+```bash
+mkdir -p api/app web/nginx .github/workflows .devcontainer
+```
+
+A simple target tree (you’ll create the contents in later steps):
+
+```text
+.
+├── .devcontainer/
+│   └── devcontainer.json
+├── .github/workflows/
+│   ├── ci.yml
+│   └── deploy-azure.yml
+├── api/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── app/
+│       └── main.py
+├── web/
+│   ├── Dockerfile
+│   ├── docker-entrypoint.sh
+│   ├── nginx/
+│   │   └── default.conf.template
+│   └── static/
+│       ├── index.html
+│       └── app.js
+├── compose.yaml
+├── compose.dev.yaml
+├── .dockerignore
+└── README.md
+```
+
+### Add the Codespaces dev container config
+
+Create `.devcontainer/devcontainer.json`:
+
+```jsonc
+{
+  "name": "modern-docker-stack",
+  // Use a dev container image with common tooling; keep project-specific tools in "features".
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.12",
+  "features": {
+    // Enables running Docker/Compose from inside the codespace (child containers).
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    // Frontend tooling (optional if you later switch away from static JS).
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" },
+    // Helpful for repo automation from the terminal.
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "forwardPorts": [8080],
+  "postCreateCommand": "python -m pip install --upgrade pip && pip install -r api/requirements.txt",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "ms-python.python"
+      ]
+    }
+  }
+}
+```
+
+What’s happening here: Codespaces will build a development container from this configuration, ensuring every developer (and prebuild) gets the same baseline toolchain. GitHub’s docs describe `devcontainer.json` as the primary Codespaces environment definition and recommend keeping it “standard” for the team, not personal preferences. citeturn6view2  
+
+Pitfall: if you “just install” tools interactively and later rebuild the container, those changes may disappear if they were made outside `/workspaces`. That’s why devcontainer config matters. citeturn6view2  
+
+Now commit this baseline:
+
+```bash
+git add .devcontainer/devcontainer.json
+git commit -m "Add Codespaces dev container"
+git push
+```
+
+Open the repo in Codespaces (GitHub UI → Code → Codespaces). When it finishes, you should have Docker available in the codespace terminal (this is what the docker-in-docker feature is for).
+
+## Local runtime with Docker Compose
+
+### Compose file discovery and why we name it `compose.yaml`
+
+Docker’s `docker compose` CLI will traverse the working directory and parents looking for `compose.yaml` or `docker-compose.yaml` if you don’t pass `-f`. citeturn5view0  
+We’ll use `compose.yaml` as the explicit modern default, and we’ll also use an additional file `compose.dev.yaml` to layer dev-only behavior via `docker compose -f ... -f ...`. This layering behavior is documented by Docker’s Compose CLI reference. citeturn5view0  
+
+### Backend API implementation (FastAPI + SQLite)
+
+Create `api/requirements.txt`:
+
+```txt
+fastapi>=0.110,<1.0
+uvicorn>=0.29,<1.0
+```
+
+Create `api/app/main.py`:
+
+```python
+import os
+import sqlite3
+from datetime import datetime, timezone
+from typing import List
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+DB_PATH = os.getenv("DB_PATH", "/data/app.db")
+
+app = FastAPI()
+
+
+def _connect() -> sqlite3.Connection:
+    # check_same_thread=False allows usage across threads (uvicorn workers/threads).
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_db() -> None:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    with _connect() as conn:
+        # WAL improves concurrency for many-read / occasional-write workloads.
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS items (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              text TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    _init_db()
+
+
+class ItemCreate(BaseModel):
+    text: str
+
+
+class Item(BaseModel):
+    id: int
+    text: str
+    created_at: str
+
+
+@app.get("/api/healthz")
+def healthz() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/api/items", response_model=List[Item])
+def list_items() -> List[Item]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, text, created_at FROM items ORDER BY id DESC"
+        ).fetchall()
+    return [Item(**dict(r)) for r in rows]
+
+
+@app.post("/api/items", response_model=Item, status_code=201)
+def create_item(payload: ItemCreate) -> Item:
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text must not be empty")
+
+    created_at = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO items(text, created_at) VALUES(?, ?)",
+            (text, created_at),
+        )
+        new_id = cur.lastrowid
+
+        row = conn.execute(
+            "SELECT id, text, created_at FROM items WHERE id = ?",
+            (new_id,),
+        ).fetchone()
+
+    return Item(**dict(row))
+```
+
+What’s happening: the API container owns the SQLite file at `DB_PATH` (default `/data/app.db`). We’ll mount `/data` as a named volume in Compose so the DB persists across container restarts.
+
+### Web container implementation (Nginx + static UI + reverse proxy)
+
+Create `web/static/index.html`:
+
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Modern Docker Stack</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+      input, button { font-size: 1rem; padding: 0.5rem; }
+      li { margin: 0.4rem 0; }
+      small { color: #666; }
+      .row { display: flex; gap: 0.5rem; }
+      .row input { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <h1>Modern Docker Stack</h1>
+    <p><small>UI served by <code>web</code> container. API proxied via <code>/api</code>.</small></p>
+
+    <div class="row">
+      <input id="text" placeholder="Type an item..." />
+      <button id="add">Add</button>
+    </div>
+
+    <h2>Items</h2>
+    <ul id="items"></ul>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
+```
+
+Create `web/static/app.js`:
+
+```js
+async function fetchItems() {
+  const res = await fetch("/api/items");
+  const items = await res.json();
+
+  const ul = document.getElementById("items");
+  ul.innerHTML = "";
+  for (const it of items) {
+    const li = document.createElement("li");
+    li.textContent = `${it.text} `;
+    const sm = document.createElement("small");
+    sm.textContent = `(${it.created_at})`;
+    li.appendChild(sm);
+    ul.appendChild(li);
+  }
+}
+
+async function addItem() {
+  const input = document.getElementById("text");
+  const text = input.value.trim();
+  if (!text) return;
+
+  const res = await fetch("/api/items", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ text })
+  });
+
+  if (!res.ok) {
+    alert("API error: " + (await res.text()));
+    return;
+  }
+
+  input.value = "";
+  await fetchItems();
+}
+
+document.getElementById("add").addEventListener("click", addItem);
+document.getElementById("text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") addItem();
+});
+
+fetchItems();
+```
+
+Create the Nginx config template `web/nginx/default.conf.template`:
+
+```nginx
+server {
+  listen 80;
+
+  location / {
+    root /usr/share/nginx/html;
+    try_files $uri $uri/ /index.html;
+  }
+
+  # Reverse proxy so browsers never need direct access to the API container.
+  location /api/ {
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    proxy_pass ${API_UPSTREAM};
+  }
+}
+```
+
+Create `web/docker-entrypoint.sh`:
+
+```sh
+#!/usr/bin/env sh
+set -eu
+
+: "${API_UPSTREAM:=http://api:8000}"
+
+# Render the nginx config with the API_UPSTREAM value.
+envsubst '$API_UPSTREAM' \
+  < /etc/nginx/conf.d/default.conf.template \
+  > /etc/nginx/conf.d/default.conf
+
+exec nginx -g 'daemon off;'
+```
+
+### Compose files
+
+Create `compose.yaml`:
+
+```yaml
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      DB_PATH: /data/app.db
+    volumes:
+      - db-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/healthz')"]
+      interval: 5s
+      timeout: 2s
+      retries: 20
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "8080:80"
+    environment:
+      # In Compose networking, "api" resolves as the api service container.
+      API_UPSTREAM: "http://api:8000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  db-data:
+```
+
+Why `depends_on` + healthcheck: Compose starts services in dependency order, and Docker documents using `depends_on` with health checks to manage startup order more reliably. citeturn0search6  
+
+Now create a dev override `compose.dev.yaml` to expose the API port on localhost (helpful for debugging/curling the API directly):
+
+```yaml
+services:
+  api:
+    ports:
+      - "8000:8000"
+```
+
+This file layering model is exactly what Docker’s compose CLI reference describes for multiple `-f` files. citeturn5view0  
+
+### Run locally (in Codespaces or locally)
+
+From repo root:
+
+```bash
+docker compose -f compose.yaml -f compose.dev.yaml up --build
+```
+
+Expected output (example):
+
+```text
+[+] Building 12.4s (20/20) FINISHED
+ => [api runtime] exporting to image
+ => => naming to docker.io/library/modern-docker-stack-api
+ => [web runtime] exporting to image
+ => => naming to docker.io/library/modern-docker-stack-web
+[+] Running 3/3
+ ✔ Network modern-docker-stack_default  Created
+ ✔ Container modern-docker-stack-api-1  Started
+ ✔ Container modern-docker-stack-web-1  Started
+```
+
+Then:
+
+- Open `http://localhost:8080` (Codespaces will prompt to forward/preview port 8080).
+- Add an item; refresh; confirm persistence even after restarting containers.
+
+Debugging checks:
+
+```bash
+docker compose ps
+curl -s http://localhost:8000/api/healthz
+curl -s http://localhost:8000/api/items
+```
+
+Pitfalls you’ll likely hit:
+
+If `depends_on` is used without a healthcheck, Compose may start `web` before the API is actually ready; Docker explicitly calls out health checks as part of startup-order control. citeturn0search6  
+If you store your SQLite DB inside the container filesystem without a volume, you’ll lose data every time the container is recreated; Docker’s best practices emphasize containers should be ephemeral and state should live outside. citeturn13view0turn13view2  
+
+Commit these baseline files:
+
+```bash
+git add api web compose.yaml compose.dev.yaml
+git commit -m "Add two-container app (web + api) with Compose"
+git push
+```
+
+## Container images with BuildKit and multi-stage Dockerfiles
+
+### `.dockerignore` (small build context = faster builds)
+
+Create `.dockerignore` at repo root:
+
+```gitignore
+.git
+.github
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/node_modules
+**/dist
+**/.DS_Store
+```
+
+Docker’s build best practices specifically call out using `.dockerignore` to exclude files not relevant to the build so you don’t send unnecessary context to the builder. citeturn13view0  
+
+### API Dockerfile (multi-stage + BuildKit cache mounts)
+
+Create `api/Dockerfile`:
+
+```dockerfile
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.12-slim AS builder
+WORKDIR /build
+
+COPY api/requirements.txt .
+
+# BuildKit cache mount speeds up pip downloads across builds.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip wheel --wheel-dir=/wheels -r requirements.txt
+
+COPY api/app ./app
+
+
+FROM python:3.12-slim AS runtime
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+
+# Create a non-root user (best practice).
+RUN adduser --disabled-password --gecos "" appuser \
+    && mkdir -p /data \
+    && chown -R appuser:appuser /data
+
+COPY --from=builder /wheels /wheels
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir /wheels/* \
+    && rm -rf /wheels
+
+COPY --from=builder /build/app ./app
+
+USER appuser
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+What’s happening, and why it’s “modern”:
+
+The `# syntax=...` directive tells BuildKit which Dockerfile frontend version to use; Docker documents this “custom Dockerfile syntax” mechanism as a BuildKit feature. citeturn14search6  
+`RUN --mount=type=cache` is a BuildKit feature that provides persistent cache locations to reuse downloads and speed up rebuilds; Docker documents cache mounts and the `RUN --mount` flag. citeturn14search0turn14search2  
+Multi-stage separation (builder → runtime) follows Docker’s recommended pattern for smaller runtime images. citeturn0search5turn13view2  
+Running as non-root is a documented best practice when the service doesn’t need privileges. citeturn13view1  
+
+### Web Dockerfile (multi-stage + runtime template)
+
+Create `web/Dockerfile`:
+
+```dockerfile
+# syntax=docker/dockerfile:1.7
+
+FROM nginx:1.27-alpine AS runtime
+
+COPY web/static/ /usr/share/nginx/html/
+COPY web/nginx/default.conf.template /etc/nginx/conf.d/default.conf.template
+COPY web/docker-entrypoint.sh /docker-entrypoint.sh
+
+RUN chmod +x /docker-entrypoint.sh
+
+ENV API_UPSTREAM="http://api:8000"
+EXPOSE 80
+ENTRYPOINT ["/docker-entrypoint.sh"]
+```
+
+Even though this web container doesn’t have a “build step,” it’s still structured so configuration is injected at runtime via environment variables (this matters in Azure, where the upstream host won’t be `api:8000`).
+
+### Using Buildx locally (explicit BuildKit)
+
+You can build with Compose, but to practice the “modern” BuildKit-native flow, build explicitly with Buildx:
+
+```bash
+docker buildx create --use
+docker buildx build -f api/Dockerfile -t local/api:dev --load .
+docker buildx build -f web/Dockerfile -t local/web:dev --load .
+```
+
+Docker documents `docker buildx build` as the command that starts a build using BuildKit. citeturn0search20  
+And Docker’s BuildKit docs explain that BuildKit is the backend replacing the legacy builder. citeturn14search15  
+
+## CI/CD with GitHub Actions and GHCR
+
+This section sets up a practical CI pipeline with these goals:
+
+- On pull requests: build images + run basic API tests (no pushing).  
+- On pushes to `main`: build + test + push both images to GHCR with cache enabled.  
+- Tag images in a way you can trace to a commit (SHA tags), not just `latest`.
+
+### GHCR naming convention and permissions
+
+We’ll publish images under:
+
+- `ghcr.io/<OWNER>/<REPO>-api:<tag>`
+- `ghcr.io/<OWNER>/<REPO>-web:<tag>`
+
+GitHub’s container registry documentation describes GHCR as the place to store container images under your account/org and associate them with a repository. citeturn0search3  
+
+Permissions gotcha: GitHub Packages supports using `GITHUB_TOKEN` in workflows (instead of a PAT), but you must grant workflow permissions such as `packages: write` for publishing; GitHub explicitly recommends setting permissions for `contents` and `packages` when using workflows with packages. citeturn2search1turn15search4turn15search10  
+
+### Add a CI workflow
+
+Create `.github/workflows/ci.yml`:
+
+```yaml
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_API: ${{ github.repository }}-api
+  IMAGE_WEB: ${{ github.repository }}-web
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Log in only when pushing to main (PRs should not publish images).
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Basic API “unit test”: build the api image, run it, curl it.
+      - name: Build API image (local)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: api/Dockerfile
+          load: true
+          tags: local/api:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test API container
+        run: |
+          docker run -d --rm -p 18000:8000 --name api_smoke -e DB_PATH=/tmp/test.db local/api:test
+          python -c "import time; time.sleep(2)"
+          curl -fsS http://localhost:18000/api/healthz
+          docker logs api_smoke
+          docker stop api_smoke
+
+      # On main, also push both images to GHCR using commit SHA tags.
+      - name: Build and push API (GHCR)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: api/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_API }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Web (GHCR)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_WEB }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+```
+
+What’s happening:
+
+A workflow is defined in YAML and is composed of jobs/steps, as GitHub documents. citeturn15search2  
+`docker/setup-buildx-action` creates a Buildx builder, and `docker/build-push-action` builds/pushes using Buildx/BuildKit (including cache). citeturn1search20turn1search0  
+We use GH Actions cache exporter/importer features via `cache-from`/`cache-to`. This is part of the BuildKit-centric CI story Docker documents. citeturn1search4turn1search0  
+We authenticate to registries using `docker/login-action`. citeturn2search2turn15search3  
+
+Example “success” output you’ll see in Actions (high-level):
+
+```text
+Login Succeeded
+#...
+pushing ghcr.io/OWNER/REPO-api:sha-<commit>
+pushing ghcr.io/OWNER/REPO-web:sha-<commit>
+```
+
+Common pitfalls:
+
+If you forget `permissions: packages: write`, you’ll often see 403-like failures when pushing to GHCR; GitHub’s docs specifically tell you to set workflow token permissions for package publishing scenarios. citeturn15search4turn15search10  
+If your workflow runs from a forked PR, `GITHUB_TOKEN` permissions are typically restricted (read-only); GitHub notes fork behavior for `GITHUB_TOKEN` in package contexts. citeturn15search4  
+In org settings, you may need to explicitly grant the repository access to the package (Actions access) depending on how the package is scoped; GitHub documents package permissions and access control. citeturn0search7turn0search11turn15search1  
+
+Commit and push:
+
+```bash
+git add .github/workflows/ci.yml
+git commit -m "Add CI: build/test and push images to GHCR"
+git push
+```
+
+## Deploying to Azure and production hardening
+
+This tutorial targets **Azure Container Apps** for production deployment because it’s designed for running containers with managed orchestration and supports secrets, environment variables, ingress controls, and calling between apps in the same environment. citeturn11search2turn3search2turn3search3turn3search7  
+
+### Production architecture on Azure
+
+For production, we keep two containers but deploy them as **two Container Apps** in the same Container Apps environment:
+
+- `modern-docker-stack-api` (internal ingress enabled, not public)
+- `modern-docker-stack-web` (public ingress enabled)
+
+Why: your browser cannot reach an internal-only API, so the web container must proxy `/api/*` to the API container app from inside the environment—exactly what our Nginx reverse proxy does.
+
+Container Apps networking: you can enable ingress as public or limited to the environment, and Container Apps can communicate within the same environment using documented methods. citeturn3search2turn3search20  
+
+### Registry choice for Azure: GHCR vs ACR
+
+**Option A (simplest for a tutorial): deploy from GHCR**  
+Azure Container Apps supports images from GHCR, but Microsoft explicitly notes that when using non-ACR registries like GHCR, you must configure the container app to authenticate to the registry even if the image is public. citeturn1search2  
+
+This means you will almost always end up creating and storing a credential (often a GitHub PAT with `read:packages`) as an Azure secret.
+
+**Option B (recommended for “real” production): deploy from ACR**  
+Microsoft’s Container Apps docs highlight managed identity integration with Azure Container Registry, which avoids username/password registry auth at runtime. citeturn3search1  
+A common production practice is: CI pushes to ACR (or copies from GHCR to ACR) and the runtime pulls from ACR with managed identity.
+
+This tutorial continues with GHCR to satisfy the “use GHCR” requirement, then calls out the ACR hardening path.
+
+### State and SQLite in production (important caveats)
+
+SQLite is a file-based database. In container orchestration, that implies storage and scaling constraints:
+
+- Without a persistent volume, app restarts can lose data (containers are meant to be ephemeral). citeturn13view0  
+- With multiple replicas, you risk divergent SQLite files unless all replicas share a safe storage mechanism (which introduces lock semantics and network filesystem behavior).
+
+Azure Container Apps supports storage mounts including ephemeral replica-scoped storage and Azure Files. Microsoft documents replica-scoped ephemeral storage (similar to Kubernetes EmptyDir) and separately documents mounting Azure Files shares. citeturn8search0turn9search10turn8search2  
+
+**Critical pitfall: SQLite + SMB mounts**  
+Microsoft’s recommended Azure Files SMB mount options include `nobrl` (disable byte-range lock requests) for applications that have challenges with POSIX locks. citeturn10view0  
+If your platform does not let you set needed mount options, SQLite can hit “database is locked” behaviors on certain network filesystems. This is a strong reason to use SQLite only for low-scale/single-instance production, or to move to a client-server DB (Postgres/MySQL) for scalable production.
+
+### Deploying with GitHub Actions using Azure OIDC (best practice)
+
+Long-lived Azure credentials in GitHub Secrets are increasingly discouraged. GitHub and Microsoft document using OpenID Connect (OIDC) so workflows can authenticate to Azure without storing long-lived secrets. citeturn1search3turn1search7turn1search11  
+
+High-level steps:
+
+1. Create an Azure identity (service principal / app registration) and add a federated credential that trusts your GitHub repo. citeturn1search3turn1search7  
+2. Store non-secret identifiers in GitHub Secrets/Variables (tenant ID, subscription ID, client ID). citeturn1search7turn1search11  
+3. Use `azure/login` in GitHub Actions with `id-token: write` permission to obtain a short-lived token. citeturn1search11turn1search3  
+
+### Azure deployment workflow example
+
+Create `.github/workflows/deploy-azure.yml`:
+
+```yaml
+name: deploy-azure
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  RG: rg-modern-docker-stack
+  LOCATION: westeurope
+  ENV_NAME: env-modern-docker-stack
+  API_APP: modern-docker-stack-api
+  WEB_APP: modern-docker-stack-web
+  REGISTRY: ghcr.io
+  IMAGE_API: ${{ github.repository }}-api
+  IMAGE_WEB: ${{ github.repository }}-web
+  TAG: sha-${{ github.sha }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Azure Container Apps extension
+        run: |
+          az extension add --name containerapp --upgrade
+
+      - name: Create resource group (idempotent)
+        run: |
+          az group create -n "${RG}" -l "${LOCATION}"
+
+      - name: Create Container Apps environment (idempotent)
+        run: |
+          az containerapp env create \
+            -n "${ENV_NAME}" \
+            -g "${RG}" \
+            -l "${LOCATION}"
+
+      # IMPORTANT:
+      # When deploying from GHCR, you must configure registry auth even if the image is public.
+      # Store GHCR_USERNAME / GHCR_TOKEN as GitHub secrets.
+      - name: Deploy API (internal ingress)
+        run: |
+          az containerapp create \
+            -n "${API_APP}" \
+            -g "${RG}" \
+            --environment "${ENV_NAME}" \
+            --image "${REGISTRY}/${IMAGE_API}:${TAG}" \
+            --registry-server "${REGISTRY}" \
+            --registry-username "${{ secrets.GHCR_USERNAME }}" \
+            --registry-password "${{ secrets.GHCR_TOKEN }}" \
+            --ingress internal \
+            --target-port 8000 \
+            --env-vars DB_PATH=/data/app.db
+
+      - name: Deploy Web (public ingress)
+        run: |
+          # API internal FQDN will exist because ingress is enabled (internal).
+          # For simplicity we set API_UPSTREAM to the API app URL.
+          API_HOST="http://${API_APP}"
+          az containerapp create \
+            -n "${WEB_APP}" \
+            -g "${RG}" \
+            --environment "${ENV_NAME}" \
+            --image "${REGISTRY}/${IMAGE_WEB}:${TAG}" \
+            --registry-server "${REGISTRY}" \
+            --registry-username "${{ secrets.GHCR_USERNAME }}" \
+            --registry-password "${{ secrets.GHCR_TOKEN }}" \
+            --ingress external \
+            --target-port 80 \
+            --env-vars API_UPSTREAM="${API_HOST}:8000"
+
+      - name: Show web URL
+        run: |
+          az containerapp show -n "${WEB_APP}" -g "${RG}" --query properties.configuration.ingress.fqdn -o tsv
+```
+
+What’s happening and why it matches best practices:
+
+OIDC avoids storing long-lived Azure credentials; GitHub’s Azure OIDC documentation describes this trust relationship and the use of `azure/login`. citeturn1search3turn1search11turn1search7  
+When deploying from GHCR, Container Apps requires registry authentication configuration even for public images—Microsoft explicitly calls this out. citeturn1search2  
+Container Apps environments are the boundary that groups apps and are managed by the platform (OS upgrades, scaling, failover). citeturn11search2  
+
+Deployment pitfalls:
+
+If you try to deploy from GHCR without setting registry credentials, the app will fail to pull. Microsoft’s GH Actions guidance for Container Apps explicitly warns about this for GHCR-like registries. citeturn1search2  
+If you intend the API to be internal-only but your browser calls it directly (client-side), it won’t work. This is why we proxy `/api/*` through the web container. Container Apps ingress can be restricted to intra-environment traffic. citeturn3search20turn3search2  
+If you scale the API to multiple replicas while using SQLite on local filesystem or replica-scoped storage, you’ll get inconsistent databases per replica. Container Apps storage docs note replica-scoped storage is scoped to a single replica (similar to EmptyDir). citeturn8search0  
+
+### Making SQLite less risky on Azure
+
+If you insist on SQLite in production, treat it as **single-instance** and be deliberate about storage:
+
+- Use a storage mount (Azure Files) for `/data` so restarts don’t wipe the database. citeturn8search2turn9search10  
+- Be aware SMB file-locking semantics can break SQLite unless mount options are chosen carefully; Microsoft’s recommended options include `nobrl` for lock challenges. citeturn10view0  
+- Consider instead: keep SQLite for dev, migrate production to Postgres (managed) while preserving the same container build/test workflows.
+
+If you decide to use Azure Files with Container Apps, start from Microsoft’s “Use storage mounts” and “Azure Files volume mount” tutorials. citeturn9search10turn8search2  
+
+### Production hardening checklist (container-centric)
+
+This checklist is grounded in Docker’s own build best practices and Container Apps operational primitives:
+
+Prefer multi-stage builds for smaller runtime images. citeturn13view2turn0search5  
+Use `.dockerignore` to shrink build context and speed builds. citeturn13view0  
+Run as a non-root user where possible. citeturn13view1  
+Pin base image versions thoughtfully; Docker discusses the tradeoff between tag mutability and digest pinning. citeturn13view2  
+Use BuildKit cache mounts and CI caching to keep builds fast. citeturn14search0turn1search0  
+Use secrets for credentials and inject them as environment variables rather than baking them into images; Container Apps supports secrets and secret-referenced env vars. citeturn3search7turn3search3  
+
+## Choosing technologies and further reading
+
+### Choosing the web + backend stack
+
+A simple containerized app usually has three layers of decisions:
+
+**Backend framework**  
+Pick something your team can maintain. FastAPI, Express, and .NET minimal APIs are all viable; the “container story” is similar as long as you can run a single process listening on a port and have health endpoints.
+
+**Web UI strategy**  
+For a tutorial, static HTML + JS behind Nginx is “smallest moving parts.” For real apps, React/Vue/Svelte build steps fit naturally into multi-stage builds (build in Node stage, serve in Nginx stage). Multi-stage builds are explicitly recommended for keeping runtime images small. citeturn13view2  
+
+**Database choice**  
+SQLite is perfect for:
+- Single-instance apps
+- Embedded/edge deployments
+- Developer laptops
+- Low-write workloads
+
+SQLite becomes risky when:
+- You scale out to multiple replicas (multiple independent files)
+- You rely on network filesystem semantics
+- You need HA/point-in-time restore
+
+On Azure specifically, storage mounts are possible, but SMB lock behavior can be problematic (see Microsoft’s mount options guidance including `nobrl`). citeturn10view0turn8search2  
+A common upgrade path is moving production to a managed DB (Postgres) while keeping the same CI pipeline that builds your API container.
+
+### Choosing Compose vs “real orchestration”
+
+Compose is intentionally optimized for dev/test and small deployments, and Docker documents it as a way to define services in YAML and run them with one command across environmentsincluding CI. citeturn3search13turn4view1  
+When you move to production cloud, you typically choose a managed orchestrator:
+
+- Azure Container Apps: managed orchestration, supports ingress controls, secrets/env vars, communication within an environment. citeturn11search2turn3search2turn3search7  
+- AKS: maximum control, but maximum ops burden; you’ll manage Kubernetes more directly (not covered here).
+
+### Choosing container registries
+
+**GHCR** is ideal when you’re already using GitHub and want repo-associated images and GitHub-native permissions. citeturn0search3turn0search7  
+**ACR** is ideal for production on Azure when you want managed identity-based pulls (no registry password at runtime). citeturn3search1  
+Docker Hub may work for simple cases, but rate limits and private repo limitations often push teams toward GHCR/ACR; Container Apps docs even mention Docker Hub download limits as an operational risk. citeturn3search1  
+
+### Further reading links
+
+Docker Build overview (BuildKit + Buildx relationship). citeturn0search4  
+BuildKit documentation (default builder, capabilities). citeturn14search15  
+`docker buildx build` reference. citeturn0search20  
+Docker multi-stage builds. citeturn0search5turn0search9  
+Docker build best practices (`.dockerignore`, non-root, pinning, CI builds). citeturn13view0turn13view1turn13view2  
+Docker Compose fundamentals and CLI behavior. citeturn4view1turn5view0  
+Compose startup order using healthchecks. citeturn0search6  
+Compose profiles (optional services). citeturn0search2  
+GitHub Container Registry (GHCR) docs and permissions model. citeturn0search3turn0search7turn15search5  
+GitHub Actions workflow syntax + publishing Docker images guidance. citeturn15search2turn15search12  
+Docker Buildx build/push GitHub Action (`build-push-action`). citeturn1search0  
+GitHub Codespaces dev containers overview (`devcontainer.json`). citeturn6view2  
+Deploy to Azure Container Apps with GitHub Actions (including GHCR auth requirement). citeturn1search2  
+GitHub OIDC with Azure + Azure login action (secretless auth). citeturn1search3turn1search7turn1search11  
+Azure Container Apps secrets and environment variables. citeturn3search7turn3search3  
+Azure Container Apps storage mounts + Azure Files mounting tutorial. citeturn9search10turn8search2  
+Recommended Azure Files mount options including `nobrl` for lock challenges. citeturn10view0
