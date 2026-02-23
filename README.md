@@ -38,10 +38,18 @@ Material for 4a to 4c is from [here](https://learn.microsoft.com/en-us/training/
 Read though this background material on docker containers on Azure [here](https://learn.microsoft.com/en-us/training/modules/intro-to-docker-containers/).  The notes at 4.a.docker_containers.md provide a summary of terms and concepts with a bioinformatics focus.  
 
 ### 4b. Practical Deployment of a website on Azure Using a Container.
-You can use the notes in 4.b.practical_container_deployment_on_azure.md as a guide to setting up a container and deploying on azure.  (These notes are based on this [tutorial](https://learn.microsoft.com/en-us/training/modules/intro-to-containers/)  specifically see Exercises in this section.
+You can use the notes in 4.b.practical_container_deployment_on_azure.md as a guide to setting up a container and deploying on azure.  These notes are based on this [tutorial](https://learn.microsoft.com/en-us/training/modules/intro-to-containers/)  specifically see Exercises in this section.  Another, somewhat more advanced tutorial is [here](https://learn.microsoft.com/en-us/training/modules/build-and-store-container-images/) but is not recommended nor needed at this point.  
+  
+### 4c. Modern Continuous Integration / Continuous Deployment using Docker and Github Actions  
+This section addresses some of the shortcoming of the tutorial written by Microsoft for Azure in section 4b.  The tutorial was written twice (once by ChatGPT and once by Claude using the same prompt listed in 4.c.prompt_notes) to address these issues.  Specifically, use of:  
+1) Buildkit  
+2) Multi-stage dockerfiles  
+3) Docker compose  
+4) CI/CD practice using Github actions  
+5) GHCR (Github Container Repository)  
+are all addressed.
+The tutorial written by Claude is qualitatively better at first glance.  A future project will be to use Claude Code to implement this.
 
-### 4c. Building and storing containers on Azure
-Read though this background material on building and storing containers on Azure [here](https://learn.microsoft.com/en-us/training/modules/build-and-store-container-images/). The notes at 4.c.build_and_store_containers.md provide a summary of terms and concepts with a bioinformatics focus.  
 
 ### 4d. Basic bioinformatics image
 For demonstration purposes only.  Consider https://hub.docker.com/r/broadinstitute/gatk 
